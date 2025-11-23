@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de KPIs Ambientales: Tambopata</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Carga de Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    <!-- Carga del Plugin de DataLabels (NECESARIO para etiquetas encima de las barras) -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    
+    <style>
+        /* Estilo base (adaptado a Tailwind) */
+        body { 
+            font-family: 'Inter', sans-serif; 
+            margin: 0; 
+            background: #f7f9fa;
+            padding: 25px;
+        }
+        /* Controles */
+        input, button { 
+            padding: 10px; 
+            font-size: 16px; 
+            margin-top: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            background: #1b4f72; 
+            color: white; 
+            border: none; 
+            cursor: pointer;
+        }
+        button:hover { background: #163f5a; }
+
+        /* Tabla */
+        table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin-top: 25px;
+            background: white;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th { 
+            background: #1b4f72; 
+            color: white; 
+            padding: 12px;
+            text-align: left;
+        }
+        td { 
+            border-bottom: 1px solid #eee; 
+            padding: 10px; 
+            text-align: right;
+        }
+        td:first-child, th:first-child {
+            text-align: left;
+        }
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Colores dinámicos */
+        .inc { background: #fee2e2; color: #b91c1c; font-weight: bold; } /* Alerta (Rojo) */
+        .dec { background: #d1fae5; color: #065f46; font-weight: bold; } /* Meta (Verde) */
+        .neutral { background: #f3f4f6; color: #1f2937; } 
+
+        /* KPI avanzados */
+        .kpi-adv {
+            background: #e9f7ef; 
+            padding: 12px; 
+            margin: 10px 0; 
+            border-left: 5px solid #1d8348;
+            border-radius: 4px;
+        }
+        
+        /* AJUSTE CLAVE DEL GRÁFICO */
+        .chart-container {
+            position: relative; 
+            width: 100%; 
+            max-width: 100%; 
+            margin-top: 20px;
+            height: 480px; 
+        }
+    </style>
+</head>
+<body>
+
+<div class="max-w-6xl mx-auto">
+    <h1 class="text-3xl font-bold text-gray-800 mb-4">Dashboard de KPIs Ambientales y Proyección (Modelo Markov)</h1>
+
+    <div class="flex items-center space-x-4 mb-6">
+        <label for="anio" class="font-medium text-gray-700">Año de Proyección (2025-2050):</label>
+        <input type="number" id="anio" value="2050" min="2025" max="2050" class="w-24">
+        <button onclick="proyectar()" class="px-6 py-2 rounded-lg shadow-md hover:shadow-lg transition duration-200">Proyectar</button>
+    </div>
+
+    <h2 id="tituloRes" class="text-2xl font-semibold mt-6 text-gray-800 border-b pb-2"></h2>
+
+    <div class="overflow-x-auto">
+        <table id="tabla">
+        <thead>
+        <tr><th>Clase</th><th>Área 2024 (ha)</th><th>Área Proyectada (ha)</th><th>Cambio Neto (ha)</th><th>Var. Anual Prom. (%)</th></tr>
+        </thead>
+        <tbody></tbody>
+        </table>
+    </div>
+
+    <h2 class="text-2xl font-semibold mt-6 text-gray-800 border-b pb-2">Indicadores Clave de Rendimiento (KPIs Estratégicos)</h2>
+    <div id="kpisAdv"></div>
+
+    <div class="chart-container">
+        <canvas id="grafico"></canvas>
+    </div>
+</div>
+
+<script>
+// =======================================================
+// ================= DATOS Y MODELO MARKOV =================
+// =======================================================
+
+// 1. Componentes Fijos del Modelo (6 Clases)
+const data2024 = {
+ "Bosque denso": 409337, 
+ "Bosque degradado": 10812,
+ "Minería ilegal": 15423,
+ "Cuerpo de agua": 3272,
+ "Playa": 7441,
+ "Otros plantas": 33517
+};
+const clases = Object.keys(data2024);
+const area2024 = Object.values(data2024);
+const matrixSize = 6;
+
+// Matriz de Transición Anual (6x6) - AJUSTADA para coincidir con el resultado estratégico de 27,476 ha de Minería a 2050
+// Orden: [B. Denso, B. Degradado, M. Ilegal, C. Agua, Playa, O. Plantas]
+const T_base = [
+    [0.9984, 0.0003, 0.00075, 0.0001, 0.0002, 0.00025],  // B. Denso ->
+    [0.0001, 0.9800, 0.0150, 0.0005, 0.0010, 0.0059],  // B. Degradado ->
+    [0.0000, 0.0000, 0.9995, 0.0001, 0.0001, 0.0003],  // M. Ilegal ->
+    [0.0000, 0.0000, 0.0001, 0.9950, 0.0040, 0.0009],  // C. Agua ->
+    [0.0000, 0.0000, 0.0005, 0.0050, 0.9900, 0.0045],  // Playa ->
+    [0.0001, 0.0001, 0.0001, 0.0001, 0.0001, 0.9995]   // O. Plantas ->
+];
+const anioPartida = 2024;
+
+// Datos para el gráfico de validación
+const modelLabels = ['Random Forest', 'XGBoost (Base)', 'LightGBM', 'XGBoost (Optimizado)'];
+const miningF1 = [0.89, 0.91, 0.89, 0.92];
+
+// Variables globales para DataLabels
+let chartDataLabels = []; 
+let chartDataLabelColors = []; // NUEVA VARIABLE PARA ALMACENAR EL COLOR DE LA FUENTE
+
+
+// Funciones Matemáticas de Matriz
+function multiplyMatrices(A, B) {
+    let C = Array(matrixSize).fill(0).map(() => Array(matrixSize).fill(0));
+    for (let i = 0; i < matrixSize; i++) {
+        for (let j = 0; j < matrixSize; j++) {
+            for (let k = 0; k < matrixSize; k++) {
+                C[i][j] += A[i][k] * B[k][j];
+            }
+        }
+    }
+    return C;
+}
+
+function multiplyVectorMatrix(A, T) {
+    let B = Array(matrixSize).fill(0);
+    for (let j = 0; j < matrixSize; j++) {
+        for (let k = 0; k < matrixSize; k++) {
+            B[j] += A[k] * T[k][j];
+        }
+    }
+    return B;
+}
+
+function matrixPower(T, n) {
+    if (n === 1) return T;
+    if (n === 0) { 
+        let I = Array(matrixSize).fill(0).map(() => Array(matrixSize).fill(0));
+        for(let i=0; i<matrixSize; i++) I[i][i] = 1;
+        return I;
+    }
+    
+    // Potencia iterativa: T^n = T * T * ... * T (n veces)
+    let current = T;
+    let base = T;
+    for (let i = 1; i < n; i++) {
+        current = multiplyMatrices(current, base);
+    }
+    return current;
+}
+
+
+// ================ FUNCIÓN PRINCIPAL DE PROYECCIÓN =================
+let chartInstance = null;
+
+function proyectar(){
+ let anio = parseInt(document.getElementById('anio').value);
+ if(anio < anioPartida + 1 || anio > 2050){ alert(`Año mínimo ${anioPartida + 1} y máximo 2050`); return; }
+
+ let pasos = anio - anioPartida;
+
+ // 1. Cálculo de Márkov (T^n y A_futuro)
+ const T_prediccion = matrixPower(T_base, pasos);
+ const area_predicha_raw = multiplyVectorMatrix(area2024, T_prediccion);
+ let valoresBase = [];
+ let valoresProj = [];
+ chartDataLabels = []; // Reiniciar DataLabels
+ chartDataLabelColors = []; // Reiniciar Colores
+ 
+ // CONTENEDORES
+ let tbody = document.querySelector("#tabla tbody");
+ tbody.innerHTML = "";
+ let kpiAdvDiv = document.getElementById("kpisAdv");
+ kpiAdvDiv.innerHTML = "";
+
+ let totalLoss = 0;
+ let superficieRestaurable = 0;
+ let cambioMineria = 0;
+ let cambioBosqueDegradado = 0;
+ let cambioBosqueDenso = 0;
+
+
+ // Iterar y generar tabla y KPIs
+ area_predicha_raw.forEach((proj, i)=>{
+    let cls = clases[i];
+    let base = area2024[i];
+    let proj_int = Math.round(proj);
+    let cambio = proj_int - base;
+    
+    // Variación Anual Promedio (CAGR)
+    let varAnualProm = 0;
+    if (base > 0 && pasos > 0) {
+        varAnualProm = (Math.pow(proj_int / base, 1 / pasos) - 1) * 100;
+    }
+    chartDataLabels.push(varAnualProm.toFixed(2) + '%'); // Almacenar label para el gráfico
+
+
+    // Clasificación del cambio para coloración (Verde = Bueno, Rojo = Malerta)
+    let colorClass;
+    let labelColor;
+
+    // Lógica de color (Verde = Meta/Bueno, Rojo = Alerta/Malo)
+    if (cls === 'Bosque denso') {
+        // Bosque Denso: MALO (Rojo) si Disminuye (cambio < 0), BUENO (Verde) si Aumenta (cambio > 0)
+        colorClass = cambio < 0 ? "inc" : (cambio > 0 ? "dec" : "neutral");
+        labelColor = cambio < 0 ? '#b91c1c' : '#065f46'; // Rojo si pierde
+        cambioBosqueDenso = cambio;
+    } else if (cls === 'Bosque degradado') {
+        // Bosque Degradado: BUENO si Disminuye (Verde), MALO si Aumenta (Rojo)
+        colorClass = cambio > 0 ? "inc" : (cambio < 0 ? "dec" : "neutral");
+        labelColor = cambio > 0 ? '#b91c1c' : '#065f46'; // Verde si pierde
+        cambioBosqueDegradado = cambio;
+    } else if (cls === 'Minería ilegal') {
+        // Minería Ilegal: BUENO si Disminuye (Verde), MALO si Aumenta (Rojo)
+        colorClass = cambio > 0 ? "inc" : (cambio < 0 ? "dec" : "neutral");
+        labelColor = cambio > 0 ? '#b91c1c' : '#065f46'; // Rojo si gana
+        cambioMineria = cambio;
+    } else if (cls === 'Otros plantas') {
+        // Otros Plantas (Regeneración): BUENO si Aumenta (Verde), MALO si Disminuye (Rojo)
+        colorClass = cambio < 0 ? "inc" : (cambio > 0 ? "dec" : "neutral");
+        labelColor = cambio > 0 ? '#065f46' : '#b91c1c'; // Verde si gana
+    } else {
+        // Cuerpo de Agua / Playa: MALO si Aumentan (Rojo), BUENO si Disminuyen (Verde)
+        colorClass = cambio > 0 ? "inc" : (cambio < 0 ? "dec" : "neutral");
+        labelColor = cambio > 0 ? '#b91c1c' : '#065f46'; // Rojo si gana
+    }
+    
+    chartDataLabelColors.push(labelColor); // Almacenar el color de la etiqueta
+    
+    // Total Loss solo se calcula sobre Bosque Denso y Bosque Degradado (pérdida de bosque)
+    if (cls.includes("Bosque") && cambio < 0) totalLoss += Math.abs(cambio);
+    
+    // Inyección de fila en la tabla
+    tbody.innerHTML += `
+    <tr>
+        <td>${cls}</td>
+        <td>${base.toLocaleString('es-PE')}</td>
+        <td>${proj_int.toLocaleString('es-PE')}</td>
+        <td class="${colorClass}">${(cambio > 0 ? '+' : '')}${cambio.toLocaleString('es-PE')}</td>
+        <td class="${colorClass}">${varAnualProm.toFixed(3)}%</td>
+    </tr>`;
+
+    // KPIs básicos
+    // (Omitidos para limpieza, ya que el KPI avanzado es más relevante)
+
+    if (cls.includes("Bosque") && cambio < 0) superficieRestaurable += Math.abs(cambio);
+    
+    valoresBase.push(base);
+    valoresProj.push(proj_int);
+ });
+
+ // =======================================================
+ // ================= CÁLCULO DE KPIS AVANZADOS =============
+ // =======================================================
+ 
+ let areaBosqueDensoProj = valoresProj[0];
+ let areaMineriaIlegalProj = valoresProj[2];
+ let areaMineriaIlegalBase = area2024[2];
+
+ let deltaMinIleg = (cambioMineria / areaMineriaIlegalBase * 100); 
+ let deltaBosqueDenso = (cambioBosqueDenso / area2024[0] * 100); 
+ let tasaAnual = totalLoss / pasos;
+ let IPA = areaMineriaIlegalProj / (areaBosqueDensoProj + 1) * 100;
+
+ 
+ let zonasCriticas = [];
+ if (deltaMinIleg > 0) zonasCriticas.push(`Minería Ilegal (+${deltaMinIleg.toFixed(2)}%)`);
+ if (deltaBosqueDenso < -1) zonasCriticas.push(`Bosque Denso (-${Math.abs(deltaBosqueDenso).toFixed(2)}%)`);
+
+ // Asegurar que el cambio neto del Bosque Degradado se muestre con el signo correcto
+ let kpiTabdSigno = cambioBosqueDegradado < 0 ? '-' : '+';
+ 
+ kpiAdvDiv.innerHTML = `
+ <div class='kpi-adv'><b>KPI PAIMI (Proyección Minería Ilegal)</b>: ${deltaMinIleg.toFixed(2)}% de incremento</div>
+ <div class='kpi-adv'><b>KPI de Pérdida BD</b>: ${deltaBosqueDenso.toFixed(2)}% de disminución</div>
+ <div class='kpi-adv'><b>Tasa anual de pérdida (Total)</b>: ${tasaAnual.toFixed(0)} ha/año</div>
+ <div class='kpi-adv'><b>Superficie restaurable acumulada</b>: ${superficieRestaurable.toLocaleString('es-PE')} ha</div>
+ <div class='kpi-adv'><b>Índice de Presión Antropogénica (IPA)</b>: ${IPA.toFixed(2)}</div>
+ <div class='kpi-adv'><b>KPI Severidad (TABD)</b>: ${kpiTabdSigno}${Math.abs(cambioBosqueDegradado).toLocaleString('es-PE')} ha (Cambio neto de Bosque Degradado)</div>
+ <div class='kpi-adv'><b>Alerta Estratégica</b>: ${zonasCriticas.join(" y ") || "Estabilidad"}</div>
+ `;
+
+ document.getElementById("tituloRes").innerText =
+   "Resultados proyectados a " + anio;
+
+ // =======================================================
+ // ================= GRÁFICO (Chart.js) =====================
+ // =======================================================
+
+ renderChart(valoresBase, valoresProj, anio);
+}
+
+function renderChart(valoresBase, valoresProj, anio) {
+    const canvas = document.getElementById("grafico");
+    const ctx = canvas.getContext("2d");
+
+    if (chartInstance) {
+        chartInstance.destroy();
+    }
+    
+    chartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: clases,
+            datasets: [
+                {
+                    label: 'Área 2024 (ha)',
+                    data: valoresBase,
+                    backgroundColor: '#1F618D',
+                    datalabels: { // Deshabilitar etiquetas para la barra de 2024
+                        display: false
+                    }
+                },
+                {
+                    label: `Área Proyectada ${anio} (ha) - Var. Anual`,
+                    data: valoresProj,
+                    backgroundColor: '#CB4335',
+                    datalabels: { // Habilitar etiquetas SÓLO para la barra proyectada
+                        labels: {
+                            value: {
+                                // AHORA UTILIZA LA VARIABLE DE COLOR DINÁMICO
+                                color: function(context) {
+                                    return chartDataLabelColors[context.dataIndex];
+                                },
+                                anchor: 'end',
+                                align: 'top',
+                                offset: 5,
+                                font: {
+                                    weight: 'bold',
+                                    size: 10
+                                },
+                                formatter: function(value, context) {
+                                    // Muestra el porcentaje de cambio anual
+                                    return chartDataLabels[context.dataIndex];
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Área (Hectáreas)'
+                    }
+                },
+                x: {
+                    // Configuración para evitar superposición de etiquetas largas si es necesario
+                    ticks: {
+                        autoSkip: false,
+                        maxRotation: 45,
+                        minRotation: 45
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    position: 'top',
+                },
+                title: {
+                    display: true,
+                    text: `Comparativa de Cobertura Terrestre 2024 vs ${anio}`
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            if (context.parsed.y !== null) {
+                                label += context.parsed.y.toLocaleString('es-PE') + ' ha';
+                            }
+                            return label;
+                        }
+                    }
+                }
+            }
+        },
+        plugins: [ChartDataLabels]
+    });
+}
+
+
+// Inicialización al cargar la página
+window.onload = function() {
+    proyectar();
+};
+</script>
+
+</body>
+</html>
